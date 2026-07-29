@@ -1,12 +1,3 @@
-"""
-Solar PV Diagnostic App
-------------------------
-One upload button -> auto-routes to CNN / Random Forest / LSTM ->
-CrewAI agent turns the raw prediction into a plain-English maintenance ticket.
-
-Run with:  streamlit run app.py
-"""
-
 import os
 import json
 import io
