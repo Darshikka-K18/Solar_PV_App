@@ -6,4 +6,5 @@ pandas
 numpy
 pillow
 crewai
+litellm
 openai
