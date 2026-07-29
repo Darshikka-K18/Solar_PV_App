@@ -35,6 +35,15 @@ for _key in ("OPENAI_API_KEY", "GROQ_API_KEY"):
 def get_agent_llm():
     """Prefer Groq (free tier) if a key is set; otherwise fall back to OpenAI."""
     if os.environ.get("GROQ_API_KEY"):
+        # Workaround for a CrewAI bug: it injects a `cache_breakpoint` marker
+        # into messages for Anthropic-style prompt caching, but doesn't strip
+        # it for non-Anthropic providers -- Groq's API then rejects the
+        # request outright. See https://github.com/crewAIInc/crewAI/issues/5886
+        try:
+            import crewai.llms.cache as _crewai_cache
+            _crewai_cache.mark_cache_breakpoint = lambda msg: msg
+        except Exception:
+            pass  # crewai internals changed / not present -- safe to ignore
         return LLM(model="groq/llama-3.1-8b-instant", api_key=os.environ["GROQ_API_KEY"])
     if os.environ.get("OPENAI_API_KEY"):
         return LLM(model="gpt-4o-mini", api_key=os.environ["OPENAI_API_KEY"])
