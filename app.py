@@ -19,16 +19,26 @@ import streamlit as st
 from PIL import Image
 from tensorflow.keras.models import load_model
 
-from crewai import Agent, Task, Crew
+from crewai import Agent, Task, Crew, LLM
 
 # On Streamlit Community Cloud, secrets are set in the app's Settings > Secrets
-# (TOML format) rather than a local .env file. This makes OPENAI_API_KEY work
-# in both environments without changing any other code.
-try:
-    if "OPENAI_API_KEY" in st.secrets:
-        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-except Exception:
-    pass  # no secrets.toml present (e.g. running purely locally) -- fine
+# (TOML format) rather than a local .env file. This makes these keys work in
+# both environments without changing any other code.
+for _key in ("OPENAI_API_KEY", "GROQ_API_KEY"):
+    try:
+        if _key in st.secrets:
+            os.environ[_key] = st.secrets[_key]
+    except Exception:
+        pass  # no secrets.toml present (e.g. running purely locally) -- fine
+
+
+def get_agent_llm():
+    """Prefer Groq (free tier) if a key is set; otherwise fall back to OpenAI."""
+    if os.environ.get("GROQ_API_KEY"):
+        return LLM(model="groq/llama-3.1-8b-instant", api_key=os.environ["GROQ_API_KEY"])
+    if os.environ.get("OPENAI_API_KEY"):
+        return LLM(model="gpt-4o-mini", api_key=os.environ["OPENAI_API_KEY"])
+    return None
 
 # --------------------------------------------------------------------------
 # CONFIG
@@ -264,6 +274,13 @@ def generate_maintenance_report(prediction: dict) -> str:
     """Pass the raw model output to a single CrewAI agent and get back a
     plain-English maintenance ticket."""
 
+    agent_llm = get_agent_llm()
+    if agent_llm is None:
+        raise RuntimeError(
+            "No LLM API key found. Set GROQ_API_KEY (free) or OPENAI_API_KEY "
+            "as an environment variable or Streamlit secret."
+        )
+
     technician = Agent(
         role="Senior Solar Maintenance Technician",
         goal=(
@@ -275,6 +292,7 @@ def generate_maintenance_report(prediction: dict) -> str:
             "residential solar arrays. You write concise, professional maintenance "
             "notes that always include a concrete recommended action and timeframe."
         ),
+        llm=agent_llm,
         verbose=False,
         allow_delegation=False,
     )
