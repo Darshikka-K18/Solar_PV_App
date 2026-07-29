@@ -491,7 +491,6 @@ def render_hero():
     render_html(
         f"""
         <div class="pv-hero">
-            <div class="pv-hero-eyebrow">Field Diagnostics // Unified PV System</div>
             <div class="pv-hero-title">Solar PV Diagnostic Assistant</div>
             <div class="pv-hero-sub">Upload a panel photo or sensor reading — or key one in by
             hand. The system routes it to the right model and prints a technician ticket.</div>
