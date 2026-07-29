@@ -492,7 +492,7 @@ def render_hero():
         f"""
         <div class="pv-hero">
             <div class="pv-hero-title">Solar PV Diagnostic Assistant</div>
-            <div class="pv-hero-sub">Upload a panel photo or sensor reading — or key one in by hand. The system routes it to the right model and prints a technician ticket.</div>
+            <div class="pv-hero-sub">Upload a panel photo or sensor reading or key one in by hand. The system routes it to the right model and prints a technician ticket.</div>
             {HORIZON_SVG}
         </div>
         """
