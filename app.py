@@ -392,7 +392,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
 .pv-hero-sub {
     color: var(--text-muted);
     font-size: 0.92rem;
-    max-width: 46ch;
+    max-width: 100%;
 }
 .pv-hero-horizon {
     width: 100%; height: 28px; margin-top: 1rem; display: block;
