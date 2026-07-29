@@ -344,16 +344,16 @@ THEME_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 :root {
-    --bg: #0C1524;
-    --surface: #142136;
-    --surface-alt: #1B2C46;
-    --line: #24374F;
-    --accent-amber: #E8A33D;
-    --accent-teal: #3E9C93;
-    --text-primary: #EAF0F6;
-    --text-muted: #8CA0B8;
-    --success: #4FAE79;
-    --danger: #D9694F;
+    --bg: #F3F6F9;
+    --surface: #FFFFFF;
+    --surface-alt: #E9F0F5;
+    --line: #D3DEE6;
+    --accent-amber: #D9861F;
+    --accent-teal: #2E7D74;
+    --text-primary: #182530;
+    --text-muted: #5C6E7D;
+    --success: #2F8F5B;
+    --danger: #C24B36;
 }
 
 html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
@@ -463,9 +463,9 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
 
 HORIZON_SVG = """
 <svg class="pv-hero-horizon" viewBox="0 0 600 28" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-  <line x1="0" y1="24" x2="600" y2="24" stroke="#24374F" stroke-width="1"/>
-  <circle cx="40" cy="24" r="9" fill="#E8A33D"/>
-  <g stroke="#3E9C93" stroke-width="2">
+  <line x1="0" y1="24" x2="600" y2="24" stroke="#C3D2DC" stroke-width="1"/>
+  <circle cx="40" cy="24" r="9" fill="#D9861F"/>
+  <g stroke="#2E7D74" stroke-width="2">
     <line x1="90" y1="24" x2="90" y2="10"/><line x1="102" y1="24" x2="102" y2="6"/>
     <line x1="114" y1="24" x2="114" y2="14"/><line x1="126" y1="24" x2="126" y2="8"/>
     <line x1="138" y1="24" x2="138" y2="12"/><line x1="150" y1="24" x2="150" y2="5"/>
@@ -475,12 +475,20 @@ HORIZON_SVG = """
 """
 
 
+def render_html(raw: str):
+    """st.markdown treats lines indented 4+ spaces as a Markdown code block,
+    even inside an HTML block -- so pretty-indented f-string HTML can get
+    partially rendered as literal text. Strip per-line indentation first."""
+    lines = raw.strip("\n").split("\n")
+    st.markdown("\n".join(line.lstrip() for line in lines), unsafe_allow_html=True)
+
+
 def inject_theme():
     st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 
 def render_hero():
-    st.markdown(
+    render_html(
         f"""
         <div class="pv-hero">
             <div class="pv-hero-eyebrow">Field Diagnostics // Unified PV System</div>
@@ -489,8 +497,7 @@ def render_hero():
             hand. The system routes it to the right model and prints a technician ticket.</div>
             {HORIZON_SVG}
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -534,8 +541,8 @@ TICKET_CSS = """
     display: inline-block; padding: 0.1rem 0.55rem; border-radius: 2px;
     font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem;
 }
-.pv-ticket-status.ok { background: rgba(79,174,121,0.15); color: var(--success); }
-.pv-ticket-status.alert { background: rgba(217,105,79,0.15); color: var(--danger); }
+.pv-ticket-status.ok { background: rgba(47,143,91,0.13); color: var(--success); }
+.pv-ticket-status.alert { background: rgba(194,75,54,0.13); color: var(--danger); }
 .pv-ticket-notes-label {
     font-family: 'Barlow Condensed', sans-serif;
     font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
@@ -571,7 +578,7 @@ def show_report(prediction: dict):
             f'<span>{html.escape(str(confidence))}%</span></div>'
         )
 
-    st.markdown(
+    render_html(
         f"""
         <div class="pv-ticket">
             <div class="pv-ticket-perf"></div>
@@ -589,8 +596,7 @@ def show_report(prediction: dict):
                     <span><span class="pv-ticket-status {status_class}">{status_label}</span></span></div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     # Debug info, if present (RF predictions include this) -- helps diagnose
@@ -608,12 +614,11 @@ def show_report(prediction: dict):
         try:
             clean_prediction = {k: v for k, v in prediction.items() if not k.startswith("_debug")}
             note = generate_maintenance_report(clean_prediction)
-            st.markdown(
+            render_html(
                 f"""
                 <div class="pv-ticket-notes-label">Technician Notes — Agent AI</div>
                 <div class="pv-ticket-notes">{html.escape(note)}</div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
         except Exception as e:
             st.warning(
