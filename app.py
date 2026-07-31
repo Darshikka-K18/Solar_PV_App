@@ -73,6 +73,49 @@ LSTM_WINDOW = 12  # must match training script
 RF_CLASS_NAMES = ['Normal', 'Shading', 'Short', 'Connector', 'OC']
 
 # --------------------------------------------------------------------------
+# PANEL-COUNT SCALING
+# --------------------------------------------------------------------------
+# The RF models were trained on a fixed reference wiring -- 5 panels in
+# series per string. Voltage (and Power = V * I) scale roughly linearly with
+# how many panels are wired in series, so a reading from a 2-panel string
+# looks like a huge voltage drop to a model that only ever saw 5-panel
+# readings -- which is exactly why it reads as OC (open circuit) instead of
+# Normal. Current does NOT scale with series panel count (only with parallel
+# strings), so current-like columns are left untouched.
+#
+# TODO: replace these with your ACTUAL column names. Check the "Debug
+# details" expander after a run, or the caption on the Manual Entry tab, to
+# see the exact names the scaler expects.
+REFERENCE_PANEL_COUNT = 5  # panels per string the models were trained on
+
+VOLTAGE_LIKE_COLUMNS = [
+    "Voc_V",  # open-circuit voltage
+    "Vmp_V",  # voltage at max power point
+]
+POWER_LIKE_COLUMNS = [
+    "Pmax_W",  # max power (= V * I, scales with series panel count)
+]
+# Isc_A, Imp_A (current), Temp_C, Irr_Wm2 (environmental) are left unchanged
+# on purpose -- they don't scale with how many panels are wired in series.
+# Anything NOT listed above (current, temperature, irradiance, etc.) is left
+# unchanged, since those don't scale with series panel count.
+
+
+def scale_for_panel_count(df: pd.DataFrame, actual_panels: int) -> pd.DataFrame:
+    """Project a reading taken from `actual_panels` panels up/down to what it
+    would look like at REFERENCE_PANEL_COUNT panels, so it matches the
+    distribution the model was trained on."""
+    if actual_panels is None or actual_panels <= 0:
+        raise ValueError("Number of panels must be a positive number.")
+
+    ratio = REFERENCE_PANEL_COUNT / actual_panels
+    df = df.copy()
+    scaled_cols = [c for c in VOLTAGE_LIKE_COLUMNS + POWER_LIKE_COLUMNS if c in df.columns]
+    for col in scaled_cols:
+        df[col] = df[col] * ratio
+    return df
+
+# --------------------------------------------------------------------------
 # CACHED MODEL LOADERS (loaded once, reused across requests)
 # --------------------------------------------------------------------------
 
@@ -159,8 +202,10 @@ def run_cnn_inference(uploaded_file):
 # INFERENCE: Random Forest (single-row sensor snapshot)
 # --------------------------------------------------------------------------
 
-def run_rf_inference_from_df(df: pd.DataFrame, string_config: str):
-    """string_config must be '1-string' or '3-string' (chosen by the user)."""
+def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: int = REFERENCE_PANEL_COUNT):
+    """string_config must be '1-string' or '3-string' (chosen by the user).
+    panel_count is how many panels are actually wired in series in this
+    reading; it's normalized to REFERENCE_PANEL_COUNT before scoring."""
     (model_1, scaler_1), (model_3, scaler_3) = load_rf()
 
     if string_config == "1-string":
@@ -178,6 +223,10 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str):
             f"Data is missing columns required by the {string_config} model: {sorted(missing)}\n"
             f"Expected columns: {list(scaler.feature_names_in_)}"
         )
+
+    # Normalize the reading to what REFERENCE_PANEL_COUNT panels would show,
+    # so a 2-panel reading doesn't look like a fault to a 5-panel-trained model.
+    df = scale_for_panel_count(df, panel_count)
 
     # Reorder/select columns to exactly match what the scaler was fit on.
     X = df[scaler.feature_names_in_].values
@@ -197,7 +246,7 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str):
     confidence = round(float(np.max(proba_vec)) * 100, 2) if proba_vec is not None else "N/A"
 
     result = {
-        "data_type": f"Sensor Snapshot ({string_config} config)",
+        "data_type": f"Sensor Snapshot ({string_config} config, {panel_count} panels)",
         "detection": label,
         "confidence": confidence,
     }
@@ -216,9 +265,9 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str):
     return result
 
 
-def run_rf_inference(uploaded_file, string_config: str):
+def run_rf_inference(uploaded_file, string_config: str, panel_count: int = REFERENCE_PANEL_COUNT):
     df = pd.read_csv(uploaded_file)
-    return run_rf_inference_from_df(df, string_config)
+    return run_rf_inference_from_df(df, string_config, panel_count)
 
 
 # --------------------------------------------------------------------------
@@ -637,6 +686,14 @@ def manual_entry_tab():
         horizontal=True,
         key="manual_string_config",
     )
+    panel_count = st.number_input(
+        "How many panels are wired in series in this string?",
+        min_value=1, value=REFERENCE_PANEL_COUNT, step=1,
+        key="manual_panel_count",
+        help=f"The model was trained on {REFERENCE_PANEL_COUNT}-panel strings. "
+             "If your actual string has a different panel count, the reading "
+             "is automatically normalized before scoring.",
+    )
 
     (model_1, scaler_1), (model_3, scaler_3) = load_rf()
     scaler = scaler_1 if string_config == "1-string" else scaler_3
@@ -654,7 +711,7 @@ def manual_entry_tab():
         df = pd.DataFrame([values])
         with st.spinner("Running diagnostic model..."):
             try:
-                prediction = run_rf_inference_from_df(df, string_config)
+                prediction = run_rf_inference_from_df(df, string_config, panel_count)
             except Exception as e:
                 st.error(f"Inference failed: {e}")
                 return
@@ -677,6 +734,7 @@ def upload_tab():
         return
 
     string_config = None
+    panel_count = REFERENCE_PANEL_COUNT
     if route == "rf":
         string_config = st.radio(
             "This looks like a single sensor snapshot. How many strings does "
@@ -684,13 +742,20 @@ def upload_tab():
             ["1-string", "3-string"],
             horizontal=True,
         )
+        panel_count = st.number_input(
+            "How many panels are wired in series in this string?",
+            min_value=1, value=REFERENCE_PANEL_COUNT, step=1,
+            help=f"The model was trained on {REFERENCE_PANEL_COUNT}-panel strings. "
+                 "If your actual string has a different panel count, the reading "
+                 "is automatically normalized before scoring.",
+        )
 
     with st.spinner("Running diagnostic model..."):
         try:
             if route == "image":
                 prediction = run_cnn_inference(uploaded_file)
             elif route == "rf":
-                prediction = run_rf_inference(uploaded_file, string_config)
+                prediction = run_rf_inference(uploaded_file, string_config, panel_count)
             elif route == "lstm":
                 prediction = run_lstm_inference(uploaded_file)
         except Exception as e:
