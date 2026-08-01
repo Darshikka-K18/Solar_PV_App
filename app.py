@@ -73,46 +73,107 @@ LSTM_WINDOW = 12  # must match training script
 RF_CLASS_NAMES = ['Normal', 'Shading', 'Short', 'Connector', 'OC']
 
 # --------------------------------------------------------------------------
-# PANEL-COUNT SCALING
+# ARRAY-CONFIG SCALING (series panels + parallel strings)
 # --------------------------------------------------------------------------
 # The RF models were trained on a fixed reference wiring -- 5 panels in
-# series per string. Voltage (and Power = V * I) scale roughly linearly with
-# how many panels are wired in series, so a reading from a 2-panel string
-# looks like a huge voltage drop to a model that only ever saw 5-panel
-# readings -- which is exactly why it reads as OC (open circuit) instead of
-# Normal. Current does NOT scale with series panel count (only with parallel
-# strings), so current-like columns are left untouched.
+# series per string, and either 1 or 3 strings in parallel (matching which
+# of the two trained models is used). Voltage scales with panels in SERIES;
+# current scales with strings in PARALLEL; power scales with both
+# (Power = Voltage * Current). Temperature/irradiance don't scale with
+# either. Mismatching the reference is exactly why a 2-panel or 2-parallel-
+# string reading can look like a fault (e.g. OC) to a model trained on a
+# different physical size.
+REFERENCE_PANELS_IN_SERIES = 5  # panels per string the models were trained on
+
+# How many parallel strings each trained model's data represents.
+REFERENCE_PARALLEL_STRINGS = {
+    "1-string": 1,
+    "3-string": 3,
+}
+
+# --------------------------------------------------------------------------
+# ARRAY-CONFIG + PANEL-TYPE SCALING
+# --------------------------------------------------------------------------
+# The RF models were trained on ONE specific simulated panel (see the
+# Simulink PV Array block this was built from): 66 cells, Voc 47.42V,
+# Isc 15A, Vmp 39.51V, Imp 14.17A -- wired 5 in series, and either 1 or 3
+# strings in parallel (matching which of the two trained models is used).
 #
-# TODO: replace these with your ACTUAL column names. Check the "Debug
-# details" expander after a run, or the caption on the Manual Entry tab, to
-# see the exact names the scaler expects.
-REFERENCE_PANEL_COUNT = 5  # panels per string the models were trained on
+# Two independent things can mismatch the training data, and both get
+# corrected before scoring:
+#   1. ARRAY WIRING -- different series panel count / parallel string count.
+#      Voltage scales with SERIES count; current scales with PARALLEL count;
+#      power scales with both.
+#   2. PANEL TYPE -- a different physical panel model entirely. We convert
+#      the user's reading to a fraction of THEIR panel's rated values
+#      (per-unit normalization), then re-scale that fraction onto the
+#      REFERENCE panel's rated values. This assumes similar cell technology/
+#      IV-curve shape between panels; it does not correct for differing
+#      temperature coefficients.
+# Temperature/irradiance readings are left unchanged by either correction.
+REFERENCE_PANELS_IN_SERIES = 5  # panels per string the models were trained on
 
-VOLTAGE_LIKE_COLUMNS = [
-    "Voc_V",  # open-circuit voltage
-    "Vmp_V",  # voltage at max power point
-]
-POWER_LIKE_COLUMNS = [
-    "Pmax_W",  # max power (= V * I, scales with series panel count)
-]
-# Isc_A, Imp_A (current), Temp_C, Irr_Wm2 (environmental) are left unchanged
-# on purpose -- they don't scale with how many panels are wired in series.
-# Anything NOT listed above (current, temperature, irradiance, etc.) is left
-# unchanged, since those don't scale with series panel count.
+# How many parallel strings each trained model's data represents.
+REFERENCE_PARALLEL_STRINGS = {
+    "1-string": 1,
+    "3-string": 3,
+}
+
+# Nameplate ratings of the exact panel the simulation/training data used
+# (from the Simulink PV Array "Block Parameters" dialog).
+REFERENCE_PANEL_SPECS = {
+    "Voc": 47.42,   # open-circuit voltage (V)
+    "Isc": 15.0,    # short-circuit current (A)
+    "Vmp": 39.51,   # voltage at max power point (V)
+    "Imp": 14.17,   # current at max power point (A)
+}
+REFERENCE_PANEL_SPECS["Pmax"] = REFERENCE_PANEL_SPECS["Vmp"] * REFERENCE_PANEL_SPECS["Imp"]
+
+# Maps each data column to (a) which array dimension it scales with, and
+# (b) which nameplate spec it should be normalized against.
+COLUMN_SCALE_CONFIG = {
+    "Voc_V":  {"array_dim": "series",   "spec_key": "Voc"},
+    "Vmp_V":  {"array_dim": "series",   "spec_key": "Vmp"},
+    "Isc_A":  {"array_dim": "parallel", "spec_key": "Isc"},
+    "Imp_A":  {"array_dim": "parallel", "spec_key": "Imp"},
+    "Pmax_W": {"array_dim": "both",     "spec_key": "Pmax"},
+}
+# Temp_C, Irr_Wm2 are intentionally absent from this map -- they don't scale
+# with array wiring or panel type.
 
 
-def scale_for_panel_count(df: pd.DataFrame, actual_panels: int) -> pd.DataFrame:
-    """Project a reading taken from `actual_panels` panels up/down to what it
-    would look like at REFERENCE_PANEL_COUNT panels, so it matches the
-    distribution the model was trained on."""
-    if actual_panels is None or actual_panels <= 0:
-        raise ValueError("Number of panels must be a positive number.")
+def scale_reading(df: pd.DataFrame, panels_in_series: int, parallel_strings: int,
+                   reference_parallel_strings: int, user_panel_specs: dict) -> pd.DataFrame:
+    """Project a reading taken from a real array (possibly a different panel
+    model, wired differently) up/down to what it would look like on the
+    REFERENCE array/panel the model was trained on."""
+    if panels_in_series is None or panels_in_series <= 0:
+        raise ValueError("Panels in series must be a positive number.")
+    if parallel_strings is None or parallel_strings <= 0:
+        raise ValueError("Parallel strings must be a positive number.")
 
-    ratio = REFERENCE_PANEL_COUNT / actual_panels
+    series_ratio = REFERENCE_PANELS_IN_SERIES / panels_in_series
+    parallel_ratio = reference_parallel_strings / parallel_strings
+    dim_ratio = {"series": series_ratio, "parallel": parallel_ratio,
+                 "both": series_ratio * parallel_ratio}
+
+    # Fill in Pmax for the user's panel if not given directly.
+    user_panel_specs = dict(user_panel_specs or {})
+    if "Pmax" not in user_panel_specs and "Vmp" in user_panel_specs and "Imp" in user_panel_specs:
+        user_panel_specs["Pmax"] = user_panel_specs["Vmp"] * user_panel_specs["Imp"]
+
     df = df.copy()
-    scaled_cols = [c for c in VOLTAGE_LIKE_COLUMNS + POWER_LIKE_COLUMNS if c in df.columns]
-    for col in scaled_cols:
-        df[col] = df[col] * ratio
+    for col, cfg in COLUMN_SCALE_CONFIG.items():
+        if col not in df.columns:
+            continue
+        array_ratio = dim_ratio[cfg["array_dim"]]
+
+        spec_key = cfg["spec_key"]
+        actual_val = user_panel_specs.get(spec_key)
+        ref_val = REFERENCE_PANEL_SPECS[spec_key]
+        panel_ratio = (ref_val / actual_val) if actual_val else 1.0  # no user spec -> assume same panel
+
+        df[col] = df[col] * array_ratio * panel_ratio
     return df
 
 # --------------------------------------------------------------------------
@@ -202,10 +263,17 @@ def run_cnn_inference(uploaded_file):
 # INFERENCE: Random Forest (single-row sensor snapshot)
 # --------------------------------------------------------------------------
 
-def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: int = REFERENCE_PANEL_COUNT):
-    """string_config must be '1-string' or '3-string' (chosen by the user).
-    panel_count is how many panels are actually wired in series in this
-    reading; it's normalized to REFERENCE_PANEL_COUNT before scoring."""
+def run_rf_inference_from_df(df: pd.DataFrame, string_config: str,
+                              panels_in_series: int = REFERENCE_PANELS_IN_SERIES,
+                              parallel_strings: int = None,
+                              user_panel_specs: dict = None):
+    """string_config must be '1-string' or '3-string' (chosen by the user --
+    picks which trained model/scaler pair to use). panels_in_series and
+    parallel_strings describe the ACTUAL array wiring this reading came from;
+    they default to the model's own reference configuration if not given.
+    user_panel_specs (dict with Voc/Isc/Vmp/Imp keys) describes the ACTUAL
+    panel model in use, from its datasheet; omit/leave None to assume it's
+    the same panel the model was trained on."""
     (model_1, scaler_1), (model_3, scaler_3) = load_rf()
 
     if string_config == "1-string":
@@ -214,6 +282,10 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: 
         model, scaler = model_3, scaler_3
     else:
         raise ValueError(f"Unknown string_config: {string_config}")
+
+    reference_parallel = REFERENCE_PARALLEL_STRINGS[string_config]
+    if parallel_strings is None:
+        parallel_strings = reference_parallel
 
     # Each scaler remembers the exact feature names/order it was fit on
     # (sklearn stores this as feature_names_in_ when fit on a DataFrame).
@@ -224,9 +296,10 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: 
             f"Expected columns: {list(scaler.feature_names_in_)}"
         )
 
-    # Normalize the reading to what REFERENCE_PANEL_COUNT panels would show,
-    # so a 2-panel reading doesn't look like a fault to a 5-panel-trained model.
-    df = scale_for_panel_count(df, panel_count)
+    # Normalize the reading to the model's reference array wiring AND
+    # reference panel type, so a different panel count, parallel-string
+    # count, or physical panel model doesn't look like a fault.
+    df = scale_reading(df, panels_in_series, parallel_strings, reference_parallel, user_panel_specs)
 
     # Reorder/select columns to exactly match what the scaler was fit on.
     X = df[scaler.feature_names_in_].values
@@ -245,8 +318,12 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: 
 
     confidence = round(float(np.max(proba_vec)) * 100, 2) if proba_vec is not None else "N/A"
 
+    panel_note = "reference panel" if not user_panel_specs else "custom panel, normalized"
     result = {
-        "data_type": f"Sensor Snapshot ({string_config} config, {panel_count} panels)",
+        "data_type": (
+            f"Sensor Snapshot ({string_config} model, "
+            f"{panels_in_series} panels/string, {parallel_strings} parallel, {panel_note})"
+        ),
         "detection": label,
         "confidence": confidence,
     }
@@ -265,9 +342,12 @@ def run_rf_inference_from_df(df: pd.DataFrame, string_config: str, panel_count: 
     return result
 
 
-def run_rf_inference(uploaded_file, string_config: str, panel_count: int = REFERENCE_PANEL_COUNT):
+def run_rf_inference(uploaded_file, string_config: str,
+                      panels_in_series: int = REFERENCE_PANELS_IN_SERIES,
+                      parallel_strings: int = None,
+                      user_panel_specs: dict = None):
     df = pd.read_csv(uploaded_file)
-    return run_rf_inference_from_df(df, string_config, panel_count)
+    return run_rf_inference_from_df(df, string_config, panels_in_series, parallel_strings, user_panel_specs)
 
 
 # --------------------------------------------------------------------------
@@ -673,6 +753,37 @@ def show_report(prediction: dict):
             )
 
 
+def panel_spec_inputs(key_prefix: str):
+    """Renders an expander asking for the user's actual panel datasheet
+    specs. Returns a dict (Voc/Isc/Vmp/Imp) or None if left at defaults
+    (meaning: assume same panel the model was trained on)."""
+    with st.expander("⚙️ My panel is a different model (optional)"):
+        st.caption(
+            f"Reference panel this model was trained on: Voc {REFERENCE_PANEL_SPECS['Voc']}V, "
+            f"Isc {REFERENCE_PANEL_SPECS['Isc']}A, Vmp {REFERENCE_PANEL_SPECS['Vmp']}V, "
+            f"Imp {REFERENCE_PANEL_SPECS['Imp']}A. Enter your panel's own datasheet values "
+            "below and readings will be normalized automatically. Leave as-is if you're "
+            "using the same panel model."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            voc = st.number_input("Voc (V)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Voc"],
+                                   format="%.2f", key=f"{key_prefix}_voc")
+            vmp = st.number_input("Vmp (V)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Vmp"],
+                                   format="%.2f", key=f"{key_prefix}_vmp")
+        with c2:
+            isc = st.number_input("Isc (A)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Isc"],
+                                   format="%.2f", key=f"{key_prefix}_isc")
+            imp = st.number_input("Imp (A)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Imp"],
+                                   format="%.2f", key=f"{key_prefix}_imp")
+
+    specs = {"Voc": voc, "Isc": isc, "Vmp": vmp, "Imp": imp}
+    unchanged = all(specs[k] == REFERENCE_PANEL_SPECS[k] for k in specs)
+    if unchanged:
+        return None  # unchanged from defaults -- no normalization needed
+    return specs
+
+
 def manual_entry_tab():
     st.markdown(
         '<p style="color: var(--text-muted); font-size: 0.92rem;">'
@@ -681,25 +792,36 @@ def manual_entry_tab():
     )
 
     string_config = st.radio(
-        "How many strings does this inverter/array have?",
+        "Which trained model matches your site (1-string or 3-string reference)?",
         ["1-string", "3-string"],
         horizontal=True,
         key="manual_string_config",
     )
-    panel_count = st.number_input(
-        "How many panels are wired in series in this string?",
-        min_value=1, value=REFERENCE_PANEL_COUNT, step=1,
-        key="manual_panel_count",
-        help=f"The model was trained on {REFERENCE_PANEL_COUNT}-panel strings. "
-             "If your actual string has a different panel count, the reading "
-             "is automatically normalized before scoring.",
-    )
+    default_parallel = REFERENCE_PARALLEL_STRINGS[string_config]
+    col_a, col_b = st.columns(2)
+    with col_a:
+        panels_in_series = st.number_input(
+            "Panels wired in series per string",
+            min_value=1, value=REFERENCE_PANELS_IN_SERIES, step=1,
+            key="manual_panels_series",
+            help=f"Model reference: {REFERENCE_PANELS_IN_SERIES} panels/string.",
+        )
+    with col_b:
+        parallel_strings = st.number_input(
+            "Strings wired in parallel",
+            min_value=1, value=default_parallel, step=1,
+            key="manual_parallel_strings",
+            help=f"Model reference: {default_parallel} parallel string(s) for "
+                 f"the {string_config} model.",
+        )
 
     (model_1, scaler_1), (model_3, scaler_3) = load_rf()
     scaler = scaler_1 if string_config == "1-string" else scaler_3
     feature_names = list(scaler.feature_names_in_)
 
     st.caption(f"This model expects {len(feature_names)} value(s): {', '.join(feature_names)}")
+
+    user_panel_specs = panel_spec_inputs("manual")
 
     values = {}
     cols = st.columns(2)
@@ -711,7 +833,9 @@ def manual_entry_tab():
         df = pd.DataFrame([values])
         with st.spinner("Running diagnostic model..."):
             try:
-                prediction = run_rf_inference_from_df(df, string_config, panel_count)
+                prediction = run_rf_inference_from_df(
+                    df, string_config, panels_in_series, parallel_strings, user_panel_specs
+                )
             except Exception as e:
                 st.error(f"Inference failed: {e}")
                 return
@@ -734,28 +858,42 @@ def upload_tab():
         return
 
     string_config = None
-    panel_count = REFERENCE_PANEL_COUNT
+    panels_in_series = REFERENCE_PANELS_IN_SERIES
+    parallel_strings = None
     if route == "rf":
         string_config = st.radio(
-            "This looks like a single sensor snapshot. How many strings does "
-            "this inverter/array have?",
+            "This looks like a single sensor snapshot. Which trained model "
+            "matches your site (1-string or 3-string reference)?",
             ["1-string", "3-string"],
             horizontal=True,
         )
-        panel_count = st.number_input(
-            "How many panels are wired in series in this string?",
-            min_value=1, value=REFERENCE_PANEL_COUNT, step=1,
-            help=f"The model was trained on {REFERENCE_PANEL_COUNT}-panel strings. "
-                 "If your actual string has a different panel count, the reading "
-                 "is automatically normalized before scoring.",
-        )
+        default_parallel = REFERENCE_PARALLEL_STRINGS[string_config]
+        col_a, col_b = st.columns(2)
+        with col_a:
+            panels_in_series = st.number_input(
+                "Panels wired in series per string",
+                min_value=1, value=REFERENCE_PANELS_IN_SERIES, step=1,
+                help=f"Model reference: {REFERENCE_PANELS_IN_SERIES} panels/string.",
+            )
+        with col_b:
+            parallel_strings = st.number_input(
+                "Strings wired in parallel",
+                min_value=1, value=default_parallel, step=1,
+                help=f"Model reference: {default_parallel} parallel string(s) for "
+                     f"the {string_config} model.",
+            )
+        user_panel_specs = panel_spec_inputs("upload")
+    else:
+        user_panel_specs = None
 
     with st.spinner("Running diagnostic model..."):
         try:
             if route == "image":
                 prediction = run_cnn_inference(uploaded_file)
             elif route == "rf":
-                prediction = run_rf_inference(uploaded_file, string_config, panel_count)
+                prediction = run_rf_inference(
+                    uploaded_file, string_config, panels_in_series, parallel_strings, user_panel_specs
+                )
             elif route == "lstm":
                 prediction = run_lstm_inference(uploaded_file)
         except Exception as e:
