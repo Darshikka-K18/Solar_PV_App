@@ -784,6 +784,13 @@ def panel_spec_inputs(key_prefix: str):
     return specs
 
 
+def resolve_string_config(parallel_strings: int) -> str:
+    """1 parallel string -> the 1-string model. Anything more than 1 -> the
+    multi-string model (trained on a 3-parallel-string reference, but its
+    scaling normalizes any actual parallel count onto that reference)."""
+    return "1-string" if parallel_strings == 1 else "3-string"
+
+
 def manual_entry_tab():
     st.markdown(
         '<p style="color: var(--text-muted); font-size: 0.92rem;">'
@@ -791,13 +798,6 @@ def manual_entry_tab():
         unsafe_allow_html=True,
     )
 
-    string_config = st.radio(
-        "Which trained model matches your site (1-string or 3-string reference)?",
-        ["1-string", "3-string"],
-        horizontal=True,
-        key="manual_string_config",
-    )
-    default_parallel = REFERENCE_PARALLEL_STRINGS[string_config]
     col_a, col_b = st.columns(2)
     with col_a:
         panels_in_series = st.number_input(
@@ -809,11 +809,16 @@ def manual_entry_tab():
     with col_b:
         parallel_strings = st.number_input(
             "Strings wired in parallel",
-            min_value=1, value=default_parallel, step=1,
+            min_value=1, value=1, step=1,
             key="manual_parallel_strings",
-            help=f"Model reference: {default_parallel} parallel string(s) for "
-                 f"the {string_config} model.",
+            help="1 = single-string site. More than 1 automatically uses the "
+                 "multi-string model, normalized to your actual count.",
         )
+    string_config = resolve_string_config(parallel_strings)
+    st.caption(
+        f"Using the **{string_config}** model "
+        f"(trained on a {REFERENCE_PARALLEL_STRINGS[string_config]}-parallel-string reference)."
+    )
 
     (model_1, scaler_1), (model_3, scaler_3) = load_rf()
     scaler = scaler_1 if string_config == "1-string" else scaler_3
@@ -861,13 +866,7 @@ def upload_tab():
     panels_in_series = REFERENCE_PANELS_IN_SERIES
     parallel_strings = None
     if route == "rf":
-        string_config = st.radio(
-            "This looks like a single sensor snapshot. Which trained model "
-            "matches your site (1-string or 3-string reference)?",
-            ["1-string", "3-string"],
-            horizontal=True,
-        )
-        default_parallel = REFERENCE_PARALLEL_STRINGS[string_config]
+        st.write("This looks like a single sensor snapshot.")
         col_a, col_b = st.columns(2)
         with col_a:
             panels_in_series = st.number_input(
@@ -878,10 +877,15 @@ def upload_tab():
         with col_b:
             parallel_strings = st.number_input(
                 "Strings wired in parallel",
-                min_value=1, value=default_parallel, step=1,
-                help=f"Model reference: {default_parallel} parallel string(s) for "
-                     f"the {string_config} model.",
+                min_value=1, value=1, step=1,
+                help="1 = single-string site. More than 1 automatically uses "
+                     "the multi-string model, normalized to your actual count.",
             )
+        string_config = resolve_string_config(parallel_strings)
+        st.caption(
+            f"Using the **{string_config}** model "
+            f"(trained on a {REFERENCE_PARALLEL_STRINGS[string_config]}-parallel-string reference)."
+        )
         user_panel_specs = panel_spec_inputs("upload")
     else:
         user_panel_specs = None
