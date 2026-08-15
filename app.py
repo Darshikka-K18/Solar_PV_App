@@ -26,7 +26,7 @@ def get_agent_llm():
     import crewai.llms.cache as _crewai_cache
     _crewai_cache.mark_cache_breakpoint = lambda msg: msg
 
-    return LLM(model="groq/llama-3.1-8b-instant", api_key=os.environ["GROQ_API_KEY"])
+    return LLM(model="groq/gpt-oss-20b", api_key=os.environ["GROQ_API_KEY"])
 
 
 # --------------------------------------------------------------------------
