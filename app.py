@@ -1,6 +1,7 @@
 import os
 import json
-from datetime import timedelta
+import csv
+from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ from tensorflow.keras.models import load_model
 from crewai import Agent, Task, Crew, LLM
 
 from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes
+from agents import run_multi_agent_pipeline
 
 # --------------------------------------------------------------------------
 # SECRETS (Streamlit Community Cloud sets these under Settings > Secrets)
@@ -335,59 +337,43 @@ def run_lstm_inference(uploaded_file):
         "failure_date": failure_date,
     }
 
-
 # --------------------------------------------------------------------------
 # AGENTIC AI LAYER (CrewAI)
 # --------------------------------------------------------------------------
 
-def generate_maintenance_report(prediction: dict) -> str:
-    """Passes the raw model output to a single CrewAI agent and returns a
-    plain-English maintenance ticket."""
-    technician = Agent(
-        role="Senior Solar Maintenance Technician",
-        goal=(
-            "Translate raw solar PV diagnostic model output into a clear, "
-            "actionable maintenance ticket a non-technical client can understand."
-        ),
-        backstory=(
-            "You have 15 years of field experience maintaining utility-scale and "
-            "residential solar arrays. You write concise, professional maintenance "
-            "notes that always include a concrete recommended action and timeframe."
-        ),
-        llm=get_agent_llm(),
-        verbose=False,
-        allow_delegation=False,
-    )
-
-    task = Task(
-        description=(
-            "Here is the raw diagnostic output from our fault-detection pipeline:\n\n"
-            f"{json.dumps(prediction, indent=2)}\n\n"
-            "Write a short 'Technician Notes' section (2-4 sentences) explaining, in "
-            "plain English, what was detected, why it matters, and a concrete "
-            "recommended action with a timeframe. Do not repeat the raw JSON."
-        ),
-        expected_output="A 2-4 sentence maintenance note in plain English.",
-        agent=technician,
-    )
-
-    crew = Crew(agents=[technician], tasks=[task], verbose=False)
-    result = crew.kickoff()
-    return str(result)
+def log_evaluation_metric(prediction: dict, agent_raw_output: str):
+    """Logs prediction vs agent reasoning for paper evaluation."""
+    with open("evaluation_log.csv", "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            datetime.now().isoformat(),
+            prediction.get("detection"),
+            prediction.get("confidence"),
+            "CONFIRMED" if "CONFIRMED_FAULT" in agent_raw_output else "FALSE_POSITIVE",
+            "IN_STOCK" if "in_stock\": true" in agent_raw_output.lower() else "OUT_OF_STOCK"
+        ])
 
 
 def show_report(prediction: dict):
-    """Renders the diagnostic ticket, then asks the agent for a technician
-    note and renders that underneath."""
+    """Renders the diagnostic ticket, then executes the multi-agent pipeline."""
     render_ticket(prediction)
 
-    with st.spinner("Agent is drafting the technician note..."):
+    with st.spinner("🤖 CrewAI Agents evaluating (Physics Validation -> SOP -> Inventory)..."):
         try:
             clean_prediction = {k: v for k, v in prediction.items() if not k.startswith("_debug")}
-            note = generate_maintenance_report(clean_prediction)
-            render_technician_notes(note)
+            
+            note = run_multi_agent_pipeline(
+                prediction=clean_prediction,
+                site_id="SITE_01",
+                lat=37.7749,
+                lon=-122.4194,
+                llm=get_agent_llm()
+            )
+            
+            log_evaluation_metric(clean_prediction, str(note))
+            render_technician_notes(str(note))
         except Exception as e:
-            st.warning(f"Agent report generation failed ({e}). Showing raw prediction only.")
+            st.warning(f"Agent pipeline execution failed ({e}). Showing raw prediction only.")
 
 
 # --------------------------------------------------------------------------
