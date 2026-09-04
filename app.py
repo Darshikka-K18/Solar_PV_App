@@ -338,56 +338,30 @@ def run_lstm_inference(uploaded_file):
     }
 
 # --------------------------------------------------------------------------
-# LOCATION & WEATHER CONFIGURATION (DEFAULT: KILINOCHCHI)
+# LOCATION CONFIGURATION (DEFAULT: KILINOCHCHI)
 # --------------------------------------------------------------------------
 
-# Sri Lanka's 25 administrative districts with approximate district-capital
-# coordinates. A fixed dropdown avoids typos/geocoding-API failures and
-# guarantees every option is a real, known location.
-SRI_LANKA_DISTRICTS = {
-    "Colombo": (6.9271, 79.8612),
-    "Gampaha": (7.0917, 80.0000),
-    "Kalutara": (6.5854, 79.9607),
-    "Kandy": (7.2906, 80.6337),
-    "Matale": (7.4675, 80.6234),
-    "Nuwara Eliya": (6.9497, 80.7891),
-    "Galle": (6.0535, 80.2210),
-    "Matara": (5.9549, 80.5550),
-    "Hambantota": (6.1246, 81.1185),
-    "Jaffna": (9.6615, 80.0255),
-    "Kilinochchi": (9.3961, 80.3982),
-    "Mannar": (8.9810, 79.9044),
-    "Vavuniya": (8.7514, 80.4971),
-    "Mullaitivu": (9.2670, 80.8142),
-    "Batticaloa": (7.7170, 81.7000),
-    "Ampara": (7.2975, 81.6747),
-    "Trincomalee": (8.5874, 81.2152),
-    "Kurunegala": (7.4863, 80.3647),
-    "Puttalam": (8.0362, 79.8283),
-    "Anuradhapura": (8.3114, 80.4037),
-    "Polonnaruwa": (7.9403, 81.0188),
-    "Badulla": (6.9934, 81.0550),
-    "Monaragala": (6.8714, 81.3507),
-    "Ratnapura": (6.6828, 80.4012),
-    "Kegalle": (7.2513, 80.3464),
-}
+# Sri Lanka's 25 administrative districts. A fixed dropdown guarantees every
+# option is a real, known location -- no lat/lon here, the agent resolves
+# coordinates itself via the 'Get Coordinates for Location' tool.
+SRI_LANKA_DISTRICTS = [
+    "Colombo", "Gampaha", "Kalutara", "Kandy", "Matale", "Nuwara Eliya",
+    "Galle", "Matara", "Hambantota", "Jaffna", "Kilinochchi", "Mannar",
+    "Vavuniya", "Mullaitivu", "Batticaloa", "Ampara", "Trincomalee",
+    "Kurunegala", "Puttalam", "Anuradhapura", "Polonnaruwa", "Badulla",
+    "Monaragala", "Ratnapura", "Kegalle",
+]
 
 
 def render_location_sidebar():
     """Renders a dropdown of Sri Lanka's 25 districts and stashes the
-    selected district's coordinates in session_state for show_report()."""
+    selected district name in session_state for show_report() to pass to
+    the agent."""
     st.sidebar.header("📍 Site Location")
-    district_names = list(SRI_LANKA_DISTRICTS.keys())
     search_location = st.sidebar.selectbox(
-        "Select District", district_names, index=district_names.index("Kilinochchi")
+        "Select District", SRI_LANKA_DISTRICTS, index=SRI_LANKA_DISTRICTS.index("Kilinochchi")
     )
-
-    site_lat, site_lon = SRI_LANKA_DISTRICTS[search_location]
-    st.sidebar.caption(f"Coordinates: {site_lat:.4f}°N, {site_lon:.4f}°E")
-
     st.session_state["search_location"] = search_location
-    st.session_state["site_lat"] = site_lat
-    st.session_state["site_lon"] = site_lon
 
 
 # --------------------------------------------------------------------------
@@ -410,18 +384,15 @@ def show_report(prediction: dict):
     render_ticket(prediction)
 
     search_location = st.session_state.get("search_location", "Kilinochchi")
-    site_lat = st.session_state.get("site_lat", 9.3961)
-    site_lon = st.session_state.get("site_lon", 80.3982)
 
-    with st.spinner("🤖 CrewAI Agent evaluating (Weather -> Physics Validation -> Diagnostic Ticket)..."):
+    with st.spinner("🤖 CrewAI Agent evaluating (Location -> Weather -> Diagnostic Ticket)..."):
         try:
             clean_prediction = {k: v for k, v in prediction.items() if not k.startswith("_debug")}
             
             note = run_multi_agent_pipeline(
                 prediction=clean_prediction,
                 site_id=f"SITE_{search_location.upper().replace(' ', '_')}",
-                lat=site_lat,
-                lon=site_lon,
+                location_name=search_location,
                 llm=get_agent_llm()
             )
             
