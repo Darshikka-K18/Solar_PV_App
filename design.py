@@ -192,10 +192,20 @@ TICKET_CSS = """
     font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
     font-size: 0.82rem; color: var(--accent-teal); margin-top: 1rem;
 }
-.pv-ticket-notes {
+/* The technician note itself is rendered as its own st.markdown() call right
+   after the label (see render_technician_notes) rather than nested inside a
+   raw HTML div -- nesting it caused a raw-HTML/markdown boundary bug where
+   the first **bold** immediately after the opening <div> tag never converted
+   while later ones on their own line did. This selector re-applies the same
+   visual styling to that separate markdown block using :has(), instead of
+   wrapping the note text in HTML again. */
+div:has(> .pv-ticket-notes-label) + div [data-testid="stMarkdownContainer"] p {
     font-family: 'IBM Plex Sans', sans-serif;
     font-size: 0.95rem; line-height: 1.5; color: var(--text-primary);
-    margin-top: 0.3rem;
+    margin: 0.3rem 0 0.6rem 0;
+}
+div:has(> .pv-ticket-notes-label) + div [data-testid="stMarkdownContainer"] strong {
+    color: var(--accent-teal);
 }
 </style>
 """
@@ -279,13 +289,15 @@ def show_report(prediction: dict):
 
 
 def render_technician_notes(note: str):
-    """Renders the agent-generated maintenance note under the ticket."""
-    render_html(
-        f"""
-        <div class="pv-ticket-notes-label">Technician Notes — Agent AI</div>
-        <div class="pv-ticket-notes">{html.escape(note)}</div>
-        """
-    )
+    """Renders the agent-generated maintenance note under the ticket.
+
+    The note is passed to st.markdown() on its own, separate from the label,
+    instead of being embedded inside a raw HTML <div> (see the CSS comment
+    above for why that broke bold formatting). Streamlit's own markdown
+    renderer handles the agent's **bold** text cleanly this way; the visual
+    styling that the old wrapper div provided is reapplied via CSS."""
+    render_html('<div class="pv-ticket-notes-label">Technician Notes — Agent AI</div>')
+    st.markdown(note)
 
 
 # --------------------------------------------------------------------------

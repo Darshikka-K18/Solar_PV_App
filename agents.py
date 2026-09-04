@@ -4,6 +4,20 @@ from tools import get_coordinates_for_location, fetch_weather_data
 
 def run_multi_agent_pipeline(prediction: dict, site_id: str = "SITE_01", location_name: str = "Kilinochchi", llm: LLM = None) -> str:
 
+    # The LSTM path predicts a future failure date from years of historical
+    # degradation trend (Health_Indicator decay), not from a single point-in-time
+    # sensor/image reading. Today's weather has no bearing on that: a long-run
+    # degradation slope isn't explained by current cloud cover, and pretending
+    # otherwise ("similar low-irradiance conditions could have existed back when
+    # the trend started") is just a guess dressed up as reasoning. So this data
+    # type skips the weather tools entirely and goes straight to reporting the
+    # trend finding.
+    if str(prediction.get("data_type", "")).startswith("Time-Series"):
+        return _run_trend_only_pipeline(prediction, site_id, location_name, llm)
+    return _run_weather_checked_pipeline(prediction, site_id, location_name, llm)
+
+
+def _run_weather_checked_pipeline(prediction: dict, site_id: str, location_name: str, llm: LLM = None) -> str:
     # ----------------------------------------------------------------------
     # AGENT: SOLAR DIAGNOSTIC EXPERT
     # (single agent -- resolves the site's coordinates itself, checks live
@@ -72,6 +86,76 @@ def run_multi_agent_pipeline(prediction: dict, site_id: str = "SITE_01", locatio
     # ----------------------------------------------------------------------
     crew = Crew(
         agents=[solar_expert],
+        tasks=[task_ticket],
+        process=Process.sequential,
+        verbose=True
+    )
+
+    result = crew.kickoff()
+    return str(result)
+
+
+def _run_trend_only_pipeline(prediction: dict, site_id: str, location_name: str, llm: LLM = None) -> str:
+    # ----------------------------------------------------------------------
+    # AGENT: DEGRADATION TREND ANALYST
+    # (no tools -- this data type is a long-horizon RUL projection from the
+    #  LSTM model, not a point-in-time reading, so there's nothing for
+    #  weather to plausibly explain. Just interpret the trend and write it up.)
+    # ----------------------------------------------------------------------
+    trend_expert = Agent(
+        role="Senior PV Degradation Analyst",
+        goal="Interpret an LSTM remaining-useful-life projection for a PV array and issue a clear diagnostic ticket, without reaching for explanations the data doesn't support.",
+        backstory="Senior Solar Reliability Engineer with 15+ years reading long-run degradation trends from PV health-indicator time series, careful never to attribute a multi-year trend to a single day's weather.",
+        tools=[],
+        llm=llm,
+        verbose=True
+    )
+
+    task_ticket = Task(
+        description=f"""
+        Site '{site_id}' is located in the '{location_name}' district of Sri Lanka.
+        The ML model output is a long-run degradation trend projection: {json.dumps(prediction)}
+
+        This came from an LSTM model trained on the site's historical Health_Indicator
+        time series, projecting forward. It is NOT a point-in-time sensor or image
+        reading, so do not check or mention current weather, cloud cover, or
+        irradiance anywhere in the ticket -- a multi-year degradation slope isn't
+        explained by today's conditions, and pretending it might be is just a guess
+        dressed up as reasoning.
+
+        Do the following, in order:
+        1. Decide a status: CONFIRMED_FAULT (a failure date is projected within
+           the horizon) or NOMINAL (no failure projected within the horizon).
+        2. Assign a confidence score (0.0-1.0) reflecting how clear-cut the trend is.
+        3. Write up the finding as a formal technical ticket, in the voice of a
+           senior solar reliability engineer, using EXACTLY this structure:
+
+        **PV Diagnostic Ticket**
+        - Site: {site_id}
+        - District: {location_name}
+        - Data Type: Time-Series Sensor Log (LSTM degradation trend)
+        - ML Model Prediction: [detection + current health indicator, from the data above]
+
+        **Diagnosis**
+        - Status: [CONFIRMED_FAULT | NOMINAL]
+        - Confidence: [0.0-1.0]
+        - Justification: [2-3 plain-language sentences interpreting the degradation
+          trend itself -- current health indicator, trajectory, and projected
+          failure date if any. No weather, no SCADA baseline.]
+
+        **Recommended Next Step**
+        - [One clear sentence: e.g. schedule preventive maintenance ahead of the
+          projected date, or no action needed and continue monitoring]
+        """,
+        expected_output="A fully filled-in technical ticket following the exact structure above, no placeholder brackets left unresolved, and no mention of weather, cloud cover, irradiance, theoretical power, or SCADA baselines anywhere.",
+        agent=trend_expert
+    )
+
+    # ----------------------------------------------------------------------
+    # CREW
+    # ----------------------------------------------------------------------
+    crew = Crew(
+        agents=[trend_expert],
         tasks=[task_ticket],
         process=Process.sequential,
         verbose=True
