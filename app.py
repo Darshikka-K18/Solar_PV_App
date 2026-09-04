@@ -314,18 +314,28 @@ def run_lstm_inference(uploaded_file):
     projected_vals = scaler.inverse_transform(np.array(future_projections).reshape(-1, 1))
     failure_indices = np.where(projected_vals < threshold)[0]
 
+    # The 24-month projection window is anchored to the LOG's own last
+    # timestamp, not to today -- correct for the model (it only knows what's
+    # in the log), but if the uploaded log is itself historical/stale, the
+    # "projected failure date" can land in the past relative to right now.
+    # We surface that distinction explicitly rather than silently handing the
+    # agent a past-dated failure and letting it write "schedule before X".
+    today = pd.Timestamp.today().normalize()
     if "timestamp" in df.columns:
         last_date = pd.to_datetime(df["timestamp"]).iloc[-1]
     else:
-        last_date = pd.Timestamp.today()
+        last_date = today
+    log_is_stale = last_date < today - timedelta(days=30)
 
     projection_dates = pd.date_range(start=last_date + timedelta(days=30), periods=24, freq="ME")
 
+    failure_date = None
+    failure_already_elapsed = False
     if len(failure_indices) > 0:
         failure_date = projection_dates[failure_indices[0]].strftime("%Y-%m-%d")
+        failure_already_elapsed = pd.Timestamp(failure_date) < today
         detection = f"Projected failure around {failure_date}"
     else:
-        failure_date = None
         detection = "No failure projected within the next 2 years"
 
     return {
@@ -335,6 +345,9 @@ def run_lstm_inference(uploaded_file):
         "current_health": round(float(df["Health_Indicator"].iloc[-1]), 2),
         "threshold": round(float(threshold), 2),
         "failure_date": failure_date,
+        "last_reading_date": last_date.strftime("%Y-%m-%d"),
+        "log_is_stale": bool(log_is_stale),
+        "failure_already_elapsed": failure_already_elapsed,
     }
 
 # --------------------------------------------------------------------------

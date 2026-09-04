@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from crewai import Agent, Task, Crew, Process, LLM
 from tools import get_coordinates_for_location, fetch_weather_data
 
@@ -111,17 +112,34 @@ def _run_trend_only_pipeline(prediction: dict, site_id: str, location_name: str,
         verbose=True
     )
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
     task_ticket = Task(
         description=f"""
+        Today's date is {today_str}.
         Site '{site_id}' is located in the '{location_name}' district of Sri Lanka.
         The ML model output is a long-run degradation trend projection: {json.dumps(prediction)}
 
         This came from an LSTM model trained on the site's historical Health_Indicator
-        time series, projecting forward. It is NOT a point-in-time sensor or image
-        reading, so do not check or mention current weather, cloud cover, or
+        time series, projecting forward from the log's own last reading
+        ('last_reading_date' in the data above). It is NOT a point-in-time sensor or
+        image reading, so do not check or mention current weather, cloud cover, or
         irradiance anywhere in the ticket -- a multi-year degradation slope isn't
         explained by today's conditions, and pretending it might be is just a guess
         dressed up as reasoning.
+
+        IMPORTANT -- read the dates carefully before writing the recommendation:
+        The projection is anchored to 'last_reading_date', not to today. If
+        'failure_already_elapsed' is true, the projected failure date is already
+        in the past relative to today ({today_str}) -- almost certainly because the
+        uploaded log itself is historical/stale ('log_is_stale' true means the last
+        reading is over a month old). In that case do NOT phrase the recommendation
+        as scheduling maintenance "before" that date, since it has already passed --
+        instead say plainly that the projection indicates the array likely already
+        reached or passed the failure threshold, that the log data is out of date,
+        and that a physical inspection plus a fresh reading is needed now to confirm
+        current status. If 'failure_already_elapsed' is false (or there's no failure
+        date), the normal "schedule before the projected date" phrasing is fine.
 
         Do the following, in order:
         1. Decide a status: CONFIRMED_FAULT (a failure date is projected within
@@ -134,6 +152,7 @@ def _run_trend_only_pipeline(prediction: dict, site_id: str, location_name: str,
         - Site: {site_id}
         - District: {location_name}
         - Data Type: Time-Series Sensor Log (LSTM degradation trend)
+        - Last Reading Date: [from 'last_reading_date' in the data above]
         - ML Model Prediction: [detection + current health indicator, from the data above]
 
         **Diagnosis**
@@ -141,13 +160,16 @@ def _run_trend_only_pipeline(prediction: dict, site_id: str, location_name: str,
         - Confidence: [0.0-1.0]
         - Justification: [2-3 plain-language sentences interpreting the degradation
           trend itself -- current health indicator, trajectory, and projected
-          failure date if any. No weather, no SCADA baseline.]
+          failure date if any, respecting the elapsed-date rule above. No weather,
+          no SCADA baseline.]
 
         **Recommended Next Step**
-        - [One clear sentence: e.g. schedule preventive maintenance ahead of the
-          projected date, or no action needed and continue monitoring]
+        - [One clear sentence, respecting the elapsed-date rule above: e.g. schedule
+          preventive maintenance ahead of the projected date, inspect now and pull a
+          fresh reading because the log is stale and the projected date has already
+          passed, or no action needed and continue monitoring]
         """,
-        expected_output="A fully filled-in technical ticket following the exact structure above, no placeholder brackets left unresolved, and no mention of weather, cloud cover, irradiance, theoretical power, or SCADA baselines anywhere.",
+        expected_output="A fully filled-in technical ticket following the exact structure above, no placeholder brackets left unresolved, no mention of weather/cloud cover/irradiance/theoretical power/SCADA baselines, and a recommendation that never tells the reader to act 'before' a date that has already elapsed.",
         agent=trend_expert
     )
 
