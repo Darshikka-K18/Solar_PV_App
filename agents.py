@@ -1,94 +1,80 @@
 import json
-from crewai import Agent, Task, Crew, LLM
+from crewai import Agent, Task, Crew, Process, LLM
 from tools import (
-    fetch_weather_data, 
+    fetch_weather_data,
     calculate_expected_pv_power,
-    get_power_baseline, 
-    get_repair_procedure,
-    check_parts_inventory,
-    calculate_repair_roi
+    get_power_baseline
 )
 
-def run_multi_agent_pipeline(prediction: dict, site_id: str = "SITE_01", lat: float = 37.77, lon: float = -122.41, llm: LLM = None) -> str:
-    
+def run_multi_agent_pipeline(prediction: dict, site_id: str = "SITE_01", lat: float = 8.75, lon: float = 80.50, llm: LLM = None) -> str:
+
     # ----------------------------------------------------------------------
-    # AGENT 1: VALIDATOR
+    # AGENT: SOLAR DIAGNOSTIC EXPERT
+    # (single agent for now — validates the ML prediction against live
+    #  weather + physics + SCADA history, and writes up the result as a
+    #  proper technical ticket. tech_expert / financial_planner agents can
+    #  be re-added later as extra Crew members + tasks with context=[task_ticket])
     # ----------------------------------------------------------------------
-    validator = Agent(
-        role="PV Environmental & Physics Validator",
-        goal="Validate ML predictions using weather, theoretical physics, and SCADA baselines.",
-        backstory="Senior Solar Reliability Engineer with expertise in solar irradiance physics, derating curves, and meteorological verification.",
+    solar_expert = Agent(
+        role="Senior PV Diagnostic Expert",
+        goal="Validate ML fault predictions against live weather, theoretical physics, and SCADA baselines, then issue a clear technical diagnostic ticket.",
+        backstory="Senior Solar Reliability Engineer with 15+ years diagnosing tropical PV arrays, expert in irradiance physics, monsoon cloud derating, and meteorological verification of automated fault alerts.",
         tools=[fetch_weather_data, calculate_expected_pv_power, get_power_baseline],
         llm=llm,
         verbose=True
     )
 
-    task_validate = Task(
+    task_ticket = Task(
         description=f"""
-        1. Fetch current weather for Lat: {lat}, Lon: {lon}.
-        2. Calculate theoretical power using 'Calculate Expected PV Power Output'.
-        3. Query historical baseline for site '{site_id}'.
-        4. Compare ML Prediction ({json.dumps(prediction)}) against empirical/theoretical baselines.
-        5. Output status: CONFIRMED_FAULT, WEATHER_FALSE_POSITIVE, or LOW_CONFIDENCE with confidence score (0.0 - 1.0).
+        Site '{site_id}' at coordinates (Lat: {lat}, Lon: {lon}) has an ML fault
+        detection of: {json.dumps(prediction)}
+
+        Do the following, in order:
+        1. Fetch current weather for the site coordinates.
+        2. Calculate theoretical expected PV power output using 'Calculate Expected PV Power Output'.
+        3. Query the historical SCADA baseline for this site.
+        4. Compare the ML prediction against the weather-adjusted theoretical power and the historical baseline.
+        5. Decide a status: CONFIRMED_FAULT, WEATHER_FALSE_POSITIVE, or LOW_CONFIDENCE, with a confidence score (0.0-1.0).
+        6. Write up the finding as a formal technical ticket, in the voice of a
+           senior solar reliability engineer, using EXACTLY this structure:
+
+        **PV Diagnostic Ticket**
+        - Site: {site_id}
+        - Location: (Lat: {lat}, Lon: {lon})
+        - ML Model Prediction: [fault type + model confidence]
+
+        **Weather & Environmental Conditions**
+        - Temperature: [°C]
+        - Cloud Cover: [%]
+        - Irradiance: [W/m²]
+
+        **Physics & SCADA Validation**
+        - Theoretical Expected Power: [W]
+        - Historical Baseline (Median): [kW]
+        - Deviation / Comparison: [1-2 sentences]
+
+        **Diagnosis**
+        - Status: [CONFIRMED_FAULT | WEATHER_FALSE_POSITIVE | LOW_CONFIDENCE]
+        - Confidence: [0.0-1.0]
+        - Justification: [2-3 sentences explaining the reasoning]
+
+        **Recommended Next Step**
+        - [One clear sentence: e.g. dispatch a technician for physical inspection,
+          or no action needed and continue monitoring]
         """,
-        expected_output="Validation status, justification, and confidence score.",
-        agent=validator
+        expected_output="A fully filled-in technical ticket following the exact structure above, no placeholder brackets left unresolved.",
+        agent=solar_expert
     )
 
     # ----------------------------------------------------------------------
-    # AGENT 2: TECHNICAL EXPERT
-    # ----------------------------------------------------------------------
-    tech_expert = Agent(
-        role="PV Technical & Supply Chain Specialist",
-        goal="Determine IEC standard repair procedures and check part availability.",
-        backstory="Certified Master PV Maintenance Technician with decades of field experience in IEC standards compliance and spare parts management.",
-        tools=[get_repair_procedure, check_parts_inventory],
-        llm=llm,
-        verbose=True
-    )
-
-    task_tech = Task(
-        description="""
-        Check Agent 1 validation output:
-        - If validation confidence < 0.50: Output "INSUFFICIENT DATA - Request thermal imaging scan".
-        - If fault is confirmed: Query 'Get Deterministic Repair Procedure' and 'Check Warehouse Parts Inventory'.
-        Provide exact repair steps, safety precautions, and stock readiness.
-        """,
-        expected_output="SOP repair steps, required tools/PPE, and warehouse stock status.",
-        agent=tech_expert,
-        context=[task_validate]
-    )
-
-    # ----------------------------------------------------------------------
-    # AGENT 3: FINANCIAL PLANNER
-    # ----------------------------------------------------------------------
-    financial_planner = Agent(
-        role="Solar Asset Operations & Financial Planner",
-        goal="Calculate daily financial loss and optimize repair dispatch urgency.",
-        backstory="Solar Asset Operations Director specializing in financial loss calculations, dispatch ROI, and maintenance cost optimization.",
-        tools=[calculate_repair_roi],
-        llm=llm,
-        verbose=True
-    )
-
-    task_financial = Task(
-        description="""
-        Use 'Calculate Repair ROI and Emergency Dispatch' to compute financial revenue loss ($/day).
-        Combine the outputs from Agent 1 (Validation) and Agent 2 (Parts/SOP) to recommend dispatch strategy:
-        EMERGENCY_DISPATCH, SCHEDULED_MAINTENANCE, or HOLD_FOR_PARTS.
-        """,
-        expected_output="Financial loss breakdown ($/day), breakeven calculation, and final operational dispatch recommendation.",
-        agent=financial_planner,
-        context=[task_validate, task_tech]
-    )
-
-    # ----------------------------------------------------------------------
-    # CREW ORCHESTRATION
+    # CREW
     # ----------------------------------------------------------------------
     crew = Crew(
-        agents=[validator, tech_expert, financial_planner], 
-        tasks=[task_validate, task_tech, task_financial], 
+        agents=[solar_expert],
+        tasks=[task_ticket],
+        process=Process.sequential,
         verbose=True
     )
-    
-    return str(crew.kickoff())
+
+    result = crew.kickoff()
+    return str(result)

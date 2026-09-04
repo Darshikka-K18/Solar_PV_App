@@ -1,16 +1,17 @@
 import os
 import json
 import csv
-from datetime import timedelta, datetime
+from datetime import datetime , timedelta
 
 import numpy as np
 import pandas as pd
 import joblib
 import streamlit as st
 from PIL import Image
+import requests
 from tensorflow.keras.models import load_model
 
-from crewai import Agent, Task, Crew, LLM
+from crewai import LLM
 
 from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes
 from agents import run_multi_agent_pipeline
@@ -338,81 +339,78 @@ def run_lstm_inference(uploaded_file):
     }
 
 # --------------------------------------------------------------------------
-# AGENTIC AI LAYER (CrewAI)
+# LOCATION & WEATHER CONFIGURATION (DEFAULT: KILINOCHCHI)
 # --------------------------------------------------------------------------
 
+@st.cache_data
+def get_coordinates(location_name: str):
+    """Looks up Lat/Lon for any city name using Open-Meteo Geocoding API with Kilinochchi as default."""
+    try:
+        url = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=en&format=json"
+        res = requests.get(url, timeout=3).json()
+        if "results" in res and len(res["results"]) > 0:
+            top = res["results"][0]
+            return top["latitude"], top["longitude"], top.get("name", location_name)
+    except Exception:
+        pass
+    # Kilinochchi default coordinates (9.3961, 80.3982)
+    return 9.3961, 80.3982, "Kilinochchi (Default)"
+
+
+def render_location_sidebar():
+    """Renders the site-location search box, resolves it to Lat/Lon, and
+    stashes the result in session_state for show_report() to use."""
+    st.sidebar.header("📍 Site Location Search")
+    search_location = st.sidebar.text_input("Search City / District in Sri Lanka", value="Kilinochchi")
+
+    site_lat, site_lon, location_display = get_coordinates(search_location)
+    st.sidebar.caption(f"Coordinates: {site_lat:.2f}°N, {site_lon:.2f}°E ({location_display})")
+
+    st.session_state["search_location"] = search_location
+    st.session_state["site_lat"] = site_lat
+    st.session_state["site_lon"] = site_lon
+
+
+# --------------------------------------------------------------------------
+# AGENTIC AI LAYER & REPORTING
+# --------------------------------------------------------------------------
 def log_evaluation_metric(prediction: dict, agent_raw_output: str):
-    """Logs prediction vs agent reasoning for paper evaluation."""
+    """Logs prediction vs agent reasoning for research paper evaluation metrics."""
     with open("evaluation_log.csv", "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             datetime.now().isoformat(),
-            prediction.get("detection"),
-            prediction.get("confidence"),
+            prediction.get("detection", "Unknown"),
+            prediction.get("confidence", 0.0),
             "CONFIRMED" if "CONFIRMED_FAULT" in agent_raw_output else "FALSE_POSITIVE",
             "IN_STOCK" if "in_stock\": true" in agent_raw_output.lower() else "OUT_OF_STOCK"
         ])
 
-
 def show_report(prediction: dict):
-    """Renders the diagnostic ticket, then executes the multi-agent pipeline."""
+    """Renders diagnostic ticket and executes the multi-agent decision pipeline."""
     render_ticket(prediction)
 
-    with st.spinner("🤖 CrewAI Agents evaluating (Physics Validation -> SOP -> Inventory)..."):
+    search_location = st.session_state.get("search_location", "Kilinochchi")
+    site_lat = st.session_state.get("site_lat", 9.3961)
+    site_lon = st.session_state.get("site_lon", 80.3982)
+
+    with st.spinner("🤖 CrewAI Agent evaluating (Weather -> Physics Validation -> Diagnostic Ticket)..."):
         try:
             clean_prediction = {k: v for k, v in prediction.items() if not k.startswith("_debug")}
             
             note = run_multi_agent_pipeline(
                 prediction=clean_prediction,
-                site_id="SITE_01",
-                lat=37.7749,
-                lon=-122.4194,
+                site_id=f"SITE_{search_location.upper().replace(' ', '_')}",
+                lat=site_lat,
+                lon=site_lon,
                 llm=get_agent_llm()
             )
             
             log_evaluation_metric(clean_prediction, str(note))
             render_technician_notes(str(note))
+            
         except Exception as e:
-            st.warning(f"Agent pipeline execution failed ({e}). Showing raw prediction only.")
-
-
-# --------------------------------------------------------------------------
-# PANEL SPEC / ARRAY CONFIG UI HELPERS
-# --------------------------------------------------------------------------
-
-def panel_spec_inputs(key_prefix: str):
-    """Expander asking for the user's actual panel datasheet specs. Returns
-    a dict (Voc/Isc/Vmp/Imp) or None if left at defaults (same panel the
-    model was trained on)."""
-    with st.expander("⚙️ My panel is a different model (optional)"):
-        st.caption(
-            f"Reference panel this model was trained on: Voc {REFERENCE_PANEL_SPECS['Voc']}V, "
-            f"Isc {REFERENCE_PANEL_SPECS['Isc']}A, Vmp {REFERENCE_PANEL_SPECS['Vmp']}V, "
-            f"Imp {REFERENCE_PANEL_SPECS['Imp']}A. Enter your panel's own datasheet values "
-            "below and readings will be normalized automatically. Leave as-is if you're "
-            "using the same panel model."
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            voc = st.number_input("Voc (V)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Voc"],
-                                   format="%.2f", key=f"{key_prefix}_voc")
-            vmp = st.number_input("Vmp (V)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Vmp"],
-                                   format="%.2f", key=f"{key_prefix}_vmp")
-        with c2:
-            isc = st.number_input("Isc (A)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Isc"],
-                                   format="%.2f", key=f"{key_prefix}_isc")
-            imp = st.number_input("Imp (A)", min_value=0.0, value=REFERENCE_PANEL_SPECS["Imp"],
-                                   format="%.2f", key=f"{key_prefix}_imp")
-
-    specs = {"Voc": voc, "Isc": isc, "Vmp": vmp, "Imp": imp}
-    unchanged = all(specs[k] == REFERENCE_PANEL_SPECS[k] for k in specs)
-    return None if unchanged else specs
-
-
-def resolve_string_config(parallel_strings: int) -> str:
-    """1 parallel string -> the 1-string model. More than 1 -> the
-    multi-string model (its scaling normalizes any actual parallel count)."""
-    return "1-string" if parallel_strings == 1 else "3-string"
+            st.error(f"Agent pipeline execution failed: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -539,13 +537,13 @@ def main():
     st.set_page_config(page_title="Solar PV Diagnostic Assistant", page_icon="☀️", layout="centered")
     inject_theme()
     render_hero()
+    render_location_sidebar()
 
     tab1, tab2 = st.tabs(["📁  Upload File", "⌨️  Manual Entry"])
     with tab1:
         upload_tab()
     with tab2:
         manual_entry_tab()
-
 
 if __name__ == "__main__":
     main()
