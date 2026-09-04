@@ -8,8 +8,7 @@ import pandas as pd
 import joblib
 import streamlit as st
 from PIL import Image
-import requests
-from tensorflow.keras.models import load_model
+from keras.models import load_model
 
 from crewai import LLM
 
@@ -342,29 +341,49 @@ def run_lstm_inference(uploaded_file):
 # LOCATION & WEATHER CONFIGURATION (DEFAULT: KILINOCHCHI)
 # --------------------------------------------------------------------------
 
-@st.cache_data
-def get_coordinates(location_name: str):
-    """Looks up Lat/Lon for any city name using Open-Meteo Geocoding API with Kilinochchi as default."""
-    try:
-        url = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=en&format=json"
-        res = requests.get(url, timeout=3).json()
-        if "results" in res and len(res["results"]) > 0:
-            top = res["results"][0]
-            return top["latitude"], top["longitude"], top.get("name", location_name)
-    except Exception:
-        pass
-    # Kilinochchi default coordinates (9.3961, 80.3982)
-    return 9.3961, 80.3982, "Kilinochchi (Default)"
+# Sri Lanka's 25 administrative districts with approximate district-capital
+# coordinates. A fixed dropdown avoids typos/geocoding-API failures and
+# guarantees every option is a real, known location.
+SRI_LANKA_DISTRICTS = {
+    "Colombo": (6.9271, 79.8612),
+    "Gampaha": (7.0917, 80.0000),
+    "Kalutara": (6.5854, 79.9607),
+    "Kandy": (7.2906, 80.6337),
+    "Matale": (7.4675, 80.6234),
+    "Nuwara Eliya": (6.9497, 80.7891),
+    "Galle": (6.0535, 80.2210),
+    "Matara": (5.9549, 80.5550),
+    "Hambantota": (6.1246, 81.1185),
+    "Jaffna": (9.6615, 80.0255),
+    "Kilinochchi": (9.3961, 80.3982),
+    "Mannar": (8.9810, 79.9044),
+    "Vavuniya": (8.7514, 80.4971),
+    "Mullaitivu": (9.2670, 80.8142),
+    "Batticaloa": (7.7170, 81.7000),
+    "Ampara": (7.2975, 81.6747),
+    "Trincomalee": (8.5874, 81.2152),
+    "Kurunegala": (7.4863, 80.3647),
+    "Puttalam": (8.0362, 79.8283),
+    "Anuradhapura": (8.3114, 80.4037),
+    "Polonnaruwa": (7.9403, 81.0188),
+    "Badulla": (6.9934, 81.0550),
+    "Monaragala": (6.8714, 81.3507),
+    "Ratnapura": (6.6828, 80.4012),
+    "Kegalle": (7.2513, 80.3464),
+}
 
 
 def render_location_sidebar():
-    """Renders the site-location search box, resolves it to Lat/Lon, and
-    stashes the result in session_state for show_report() to use."""
-    st.sidebar.header("📍 Site Location Search")
-    search_location = st.sidebar.text_input("Search City / District in Sri Lanka", value="Kilinochchi")
+    """Renders a dropdown of Sri Lanka's 25 districts and stashes the
+    selected district's coordinates in session_state for show_report()."""
+    st.sidebar.header("📍 Site Location")
+    district_names = list(SRI_LANKA_DISTRICTS.keys())
+    search_location = st.sidebar.selectbox(
+        "Select District", district_names, index=district_names.index("Kilinochchi")
+    )
 
-    site_lat, site_lon, location_display = get_coordinates(search_location)
-    st.sidebar.caption(f"Coordinates: {site_lat:.2f}°N, {site_lon:.2f}°E ({location_display})")
+    site_lat, site_lon = SRI_LANKA_DISTRICTS[search_location]
+    st.sidebar.caption(f"Coordinates: {site_lat:.4f}°N, {site_lon:.4f}°E")
 
     st.session_state["search_location"] = search_location
     st.session_state["site_lat"] = site_lat
