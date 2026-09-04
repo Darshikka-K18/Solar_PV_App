@@ -13,7 +13,7 @@ from tensorflow.keras.models import load_model
 
 from crewai import LLM
 
-from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes
+from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes, resolve_string_config, panel_spec_inputs
 from agents import run_multi_agent_pipeline
 
 # --------------------------------------------------------------------------

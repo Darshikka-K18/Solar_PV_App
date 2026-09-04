@@ -286,3 +286,42 @@ def render_technician_notes(note: str):
         <div class="pv-ticket-notes">{html.escape(note)}</div>
         """
     )
+
+
+# --------------------------------------------------------------------------
+# ARRAY / PANEL INPUT HELPERS
+# (used by app.py's manual_entry_tab() and upload_tab() for the RF path)
+# --------------------------------------------------------------------------
+
+def resolve_string_config(parallel_strings: int) -> str:
+    """Maps an actual parallel-string count onto the trained reference model.
+    The RF models were only trained on a 1-parallel-string reference and a
+    3-parallel-string reference, so any wiring with 2+ parallel strings uses
+    the 3-string model (app.py's scale_reading() then normalizes the reading
+    down to the actual count)."""
+    return "1-string" if parallel_strings <= 1 else "3-string"
+
+
+def panel_spec_inputs(key_prefix: str) -> dict:
+    """Optional panel-nameplate override (Voc/Isc/Vmp/Imp), shown as a
+    collapsed expander so it doesn't clutter the form. Leaving a field at
+    0.0 means 'assume the reference panel the models were trained on' --
+    only fields the user actually fills in are returned, matching what
+    app.py's scale_reading() expects for user_panel_specs."""
+    with st.expander("Using a different panel model? (optional)"):
+        st.caption(
+            "Leave any field at 0.0 to assume the reference panel "
+            "(Voc 47.42V, Isc 15A, Vmp 39.51V, Imp 14.17A)."
+        )
+        field_labels = {"Voc": "Voc (V)", "Isc": "Isc (A)", "Vmp": "Vmp (V)", "Imp": "Imp (A)"}
+        cols = st.columns(4)
+        specs = {}
+        for i, (field, label) in enumerate(field_labels.items()):
+            with cols[i]:
+                val = st.number_input(
+                    label, min_value=0.0, value=0.0, format="%.2f",
+                    key=f"{key_prefix}_panel_{field}",
+                )
+                if val > 0:
+                    specs[field] = val
+    return specs
