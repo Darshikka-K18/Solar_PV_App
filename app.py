@@ -640,17 +640,23 @@ def fusion_show_report(fused: dict):
 def fusion_tab():
     st.markdown(
         '<p style="color: var(--text-muted); font-size: 0.92rem;">'
-        'Upload a thermal image AND a sensor reading for the same panel. '
+        'Upload an image AND a sensor reading CSV for the same panel. '
         'Both models run independently, and the results are combined where '
         'they overlap (partial shading).</p>',
         unsafe_allow_html=True,
     )
 
-    thermal_file = st.file_uploader(
-        "Thermal image", type=["png", "jpg", "jpeg"], key="fusion_thermal_upload"
-    )
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        thermal_file = st.file_uploader(
+            "Image", type=["png", "jpg", "jpeg"], key="fusion_thermal_upload"
+        )
+    with col_up2:
+        rf_csv_file = st.file_uploader(
+            "Sensor reading (CSV)", type=["csv"], key="fusion_rf_upload"
+        )
 
-    st.markdown("**Sensor reading**")
+    st.markdown("**Array configuration**")
     col_a, col_b = st.columns(2)
     with col_a:
         panels_in_series = st.number_input(
@@ -665,28 +671,17 @@ def fusion_tab():
     string_config = resolve_string_config(parallel_strings)
     st.caption(f"Using the **{string_config}** RF model.")
 
-    (model_1, scaler_1), (model_3, scaler_3) = load_rf()
-    scaler = scaler_1 if string_config == "1-string" else scaler_3
-    feature_names = list(scaler.feature_names_in_)
-
     user_panel_specs = panel_spec_inputs("fusion")
 
-    values = {}
-    cols = st.columns(2)
-    for i, feat in enumerate(feature_names):
-        with cols[i % 2]:
-            values[feat] = st.number_input(feat, value=0.0, format="%.4f", key=f"fusion_{feat}")
-
     if st.button("Run Fusion Diagnostic", type="primary"):
-        if thermal_file is None:
-            st.error("Upload a thermal image first -- fusion needs both inputs.")
+        if thermal_file is None or rf_csv_file is None:
+            st.error("Upload both an image and a sensor reading CSV -- fusion needs both inputs.")
             return
 
         with st.spinner("Running both models..."):
             try:
-                rf_df = pd.DataFrame([values])
-                rf_result = run_rf_inference_from_df(
-                    rf_df, string_config, panels_in_series, parallel_strings, user_panel_specs
+                rf_result = run_rf_inference(
+                    rf_csv_file, string_config, panels_in_series, parallel_strings, user_panel_specs
                 )
                 thermal_result = run_thermal_cnn_inference(thermal_file)
                 fused = fusion.fuse_predictions(rf_result, thermal_result, string_config)
