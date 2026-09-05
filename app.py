@@ -229,7 +229,11 @@ def run_thermal_cnn_inference(uploaded_file):
     _, target_h, target_w, channels = model.input_shape
     img = Image.open(uploaded_file).convert("RGB" if channels == 3 else "L")
     img = img.resize((target_w, target_h))
-    arr = np.array(img) / 255.0
+    # NOTE: no /255 here. This model has mobilenet_v2.preprocess_input() baked
+    # in as a layer (see train_thermal.py) -- dividing by 255 first would
+    # double-preprocess the image and feed the model garbage, same as the
+    # explicit warnings in test_thermal.py / check_validation.py.
+    arr = np.array(img).astype("float32")
     arr = np.expand_dims(arr, axis=0)
 
     preds = model.predict(arr, verbose=0)[0]
