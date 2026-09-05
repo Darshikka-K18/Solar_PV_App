@@ -1,0 +1,13 @@
+{
+    "model_type": "thermal_pv_fault_detection",
+    "classes": {
+        "0": "Cracking",
+        "1": "Diode",
+        "2": "Shadowing"
+    },
+    "class_names": [
+        "Cracking",
+        "Diode",
+        "Shadowing"
+    ]
+}

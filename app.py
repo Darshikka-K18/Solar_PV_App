@@ -40,6 +40,9 @@ MODELS_DIR = "models"
 CNN_MODEL_PATH = os.path.join(MODELS_DIR, "CNN_PV_Fault_Model.keras")
 CLASS_MAPPING_PATH = os.path.join(MODELS_DIR, "class_mapping.json")
 
+THERMAL_MODEL_PATH = os.path.join(MODELS_DIR, "best_thermal_shadowing_model.keras")
+THERMAL_CLASS_NAMES_PATH = os.path.join(MODELS_DIR, "thermal_class_names.json")
+
 RF_MODEL_1_PATH = os.path.join(MODELS_DIR, "rf_model_1_string.pkl")
 RF_SCALER_1_PATH = os.path.join(MODELS_DIR, "rf_scaler_1_string.pkl")
 RF_MODEL_3_PATH = os.path.join(MODELS_DIR, "rf_model_3_string.pkl")
@@ -140,6 +143,19 @@ def load_cnn():
 
 
 @st.cache_resource
+def load_thermal_cnn():
+    model = load_model(THERMAL_MODEL_PATH)
+    with open(THERMAL_CLASS_NAMES_PATH) as f:
+        thermal_meta = json.load(f)
+    # thermal_class_names.json stores {"classes": {"0": "Cracking", ...}} --
+    # index -> label directly, unlike class_mapping.json (Keras class_indices,
+    # label -> index) used by the RGB CNN. Different source format, so no
+    # inversion needed here.
+    index_to_label = {int(k): v for k, v in thermal_meta["classes"].items()}
+    return model, index_to_label
+
+
+@st.cache_resource
 def load_rf():
     model_1 = joblib.load(RF_MODEL_1_PATH)
     scaler_1 = joblib.load(RF_SCALER_1_PATH)
@@ -202,6 +218,28 @@ def run_cnn_inference(uploaded_file):
 
     return {
         "data_type": "RGB Image",
+        "detection": label,
+        "confidence": round(confidence, 2),
+    }
+
+
+def run_thermal_cnn_inference(uploaded_file):
+    model, index_to_label = load_thermal_cnn()
+
+    _, target_h, target_w, channels = model.input_shape
+    img = Image.open(uploaded_file).convert("RGB" if channels == 3 else "L")
+    img = img.resize((target_w, target_h))
+    arr = np.array(img) / 255.0
+    arr = np.expand_dims(arr, axis=0)
+
+    preds = model.predict(arr, verbose=0)[0]
+    class_idx = int(np.argmax(preds))
+    confidence = float(preds[class_idx]) * 100
+
+    label = index_to_label.get(class_idx, f"Class_{class_idx}")
+
+    return {
+        "data_type": "Thermal Image",
         "detection": label,
         "confidence": round(confidence, 2),
     }
@@ -495,6 +533,15 @@ def upload_tab():
     panels_in_series = REFERENCE_PANELS_IN_SERIES
     parallel_strings = None
     user_panel_specs = None
+    image_kind = None
+
+    if route == "image":
+        image_kind = st.radio(
+            "What kind of image is this?",
+            ["RGB (visible light)", "Thermal (infrared)"],
+            key="upload_image_kind",
+            horizontal=True,
+        )
 
     if route == "rf":
         st.write("This looks like a single sensor snapshot.")
@@ -522,7 +569,10 @@ def upload_tab():
     with st.spinner("Running diagnostic model..."):
         try:
             if route == "image":
-                prediction = run_cnn_inference(uploaded_file)
+                if image_kind == "Thermal (infrared)":
+                    prediction = run_thermal_cnn_inference(uploaded_file)
+                else:
+                    prediction = run_cnn_inference(uploaded_file)
             elif route == "rf":
                 prediction = run_rf_inference(
                     uploaded_file, string_config, panels_in_series, parallel_strings, user_panel_specs
