@@ -640,9 +640,9 @@ def fusion_show_report(fused: dict):
 def fusion_tab():
     st.markdown(
         '<p style="color: var(--text-muted); font-size: 0.92rem;">'
-        'Upload an image AND a sensor reading CSV for the same panel. '
+        'Upload an image and a sensor reading CSV for the same panel. '
         'Both models run independently, and the results are combined where '
-        'they overlap (partial shading).</p>',
+        'they overlap .</p>',
         unsafe_allow_html=True,
     )
 
