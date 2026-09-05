@@ -288,6 +288,51 @@ def show_report(prediction: dict):
                 st.json(prediction["_debug_class_probabilities"])
 
 
+def render_fusion_report(fused: dict):
+    """Renders a fused RF + Thermal result as its own ticket. Reuses the
+    same TICKET_CSS as show_report() so it matches the rest of the app.
+    fused is the dict returned by fusion.fuse_predictions()."""
+    st.markdown(TICKET_CSS, unsafe_allow_html=True)
+
+    confirmed = fused["fused_status"] == "CONFIRMED_CROSS_MODAL"
+    status_class = "alert" if confirmed else "ok"
+    status_label = "CONFIRMED SHADING (FUSED)" if confirmed else "NO SHARED FINDING"
+    ticket_id = datetime.now().strftime("PV-FUSION-%Y%m%d-%H%M%S")
+
+    confidence_row = ""
+    if fused.get("fused_confidence_pct") is not None:
+        confidence_row = (
+            f'<div class="pv-ticket-row"><span>Fused Confidence</span>'
+            f'<span>{html.escape(str(fused["fused_confidence_pct"]))}%</span></div>'
+        )
+
+    render_html(
+        f"""
+        <div class="pv-ticket">
+            <div class="pv-ticket-perf"></div>
+            <div class="pv-ticket-body">
+                <div class="pv-ticket-head">
+                    <span class="pv-ticket-eyebrow">Fusion Diagnostic Ticket</span>
+                    <span class="pv-ticket-id">{ticket_id}</span>
+                </div>
+                <div class="pv-ticket-row"><span>Sensor (RF) Finding</span>
+                    <span>{html.escape(str(fused['rf_detection']))} ({fused['rf_shading_probability']*100:.1f}% Shading)</span></div>
+                <div class="pv-ticket-row"><span>Thermal Finding</span>
+                    <span>{html.escape(str(fused['thermal_detection']))} ({fused['thermal_shadowing_probability']*100:.1f}% Shadowing)</span></div>
+                <div class="pv-ticket-row"><span>Combined Score</span>
+                    <span>{fused['combined_shading_score']*100:.1f}%</span></div>
+                {confidence_row}
+                <div class="pv-ticket-row"><span>Status</span>
+                    <span><span class="pv-ticket-status {status_class}">{status_label}</span></span></div>
+            </div>
+        </div>
+        """
+    )
+
+    with st.expander("Why this verdict?"):
+        st.write(fused["explanation"])
+
+
 def render_technician_notes(note: str):
     """Renders the agent-generated maintenance note under the ticket.
 

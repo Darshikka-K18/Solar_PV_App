@@ -12,8 +12,9 @@ from keras.models import load_model
 
 from crewai import LLM
 
-from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes, resolve_string_config, panel_spec_inputs
+from design import inject_theme, render_hero, show_report as render_ticket, render_technician_notes, resolve_string_config, panel_spec_inputs, render_fusion_report
 from agents import run_multi_agent_pipeline
+import fusion
 
 # --------------------------------------------------------------------------
 # SECRETS (Streamlit Community Cloud sets these under Settings > Secrets)
@@ -246,6 +247,12 @@ def run_thermal_cnn_inference(uploaded_file):
         "data_type": "Thermal Image",
         "detection": label,
         "confidence": round(confidence, 2),
+        # fusion.py needs the full distribution -- e.g. it may need to read
+        # the Shadowing probability even when Diode was the top-1 pick.
+        "_debug_class_probabilities": {
+            index_to_label.get(i, f"Class_{i}"): round(float(p), 4)
+            for i, p in enumerate(preds)
+        },
     }
 
 
@@ -590,17 +597,125 @@ def upload_tab():
     show_report(prediction)
 
 
+def fusion_show_report(fused: dict):
+    """Renders the fused ticket, then runs it through the same agent
+    pipeline used elsewhere -- so a fusion result still gets a weather
+    sanity-check and a technician note, not just the raw numbers."""
+    render_fusion_report(fused)
+
+    search_location = st.session_state.get("search_location", "Kilinochchi")
+
+    # Translate the fused result into the same shape the agent pipeline
+    # already expects (see agents.py / show_report in app.py). This is a
+    # sensor-derived detection either way (the shared class, Shading, comes
+    # from both a sensor and an image), so it goes through the
+    # weather-checked path, not the trend-only path.
+    if fused["fused_status"] == "CONFIRMED_CROSS_MODAL":
+        agent_prediction = {
+            "data_type": "Fusion (RF Sensor + Thermal Image)",
+            "detection": fused["fused_label"],
+            "confidence": fused["fused_confidence_pct"],
+        }
+    else:
+        agent_prediction = {
+            "data_type": "Fusion (RF Sensor + Thermal Image, no shared finding)",
+            "detection": f"Sensor: {fused['rf_detection']} / Thermal: {fused['thermal_detection']}",
+            "confidence": "N/A",
+        }
+
+    with st.spinner("🤖 CrewAI Agent evaluating (Location -> Weather -> Diagnostic Ticket)..."):
+        try:
+            note = run_multi_agent_pipeline(
+                prediction=agent_prediction,
+                site_id=f"SITE_{search_location.upper().replace(' ', '_')}",
+                location_name=search_location,
+                llm=get_agent_llm()
+            )
+            log_evaluation_metric(agent_prediction, str(note))
+            render_technician_notes(str(note))
+        except Exception as e:
+            st.error(f"Agent pipeline execution failed: {e}")
+
+
+def fusion_tab():
+    st.markdown(
+        '<p style="color: var(--text-muted); font-size: 0.92rem;">'
+        'Upload a thermal image AND a sensor reading for the same panel. '
+        'Both models run independently, and the results are combined where '
+        'they overlap (partial shading).</p>',
+        unsafe_allow_html=True,
+    )
+
+    thermal_file = st.file_uploader(
+        "Thermal image", type=["png", "jpg", "jpeg"], key="fusion_thermal_upload"
+    )
+
+    st.markdown("**Sensor reading**")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        panels_in_series = st.number_input(
+            "Panels wired in series per string", min_value=1,
+            value=REFERENCE_PANELS_IN_SERIES, step=1, key="fusion_panels_series",
+        )
+    with col_b:
+        parallel_strings = st.number_input(
+            "Strings wired in parallel", min_value=1, value=1, step=1,
+            key="fusion_parallel_strings",
+        )
+    string_config = resolve_string_config(parallel_strings)
+    st.caption(f"Using the **{string_config}** RF model.")
+
+    (model_1, scaler_1), (model_3, scaler_3) = load_rf()
+    scaler = scaler_1 if string_config == "1-string" else scaler_3
+    feature_names = list(scaler.feature_names_in_)
+
+    user_panel_specs = panel_spec_inputs("fusion")
+
+    values = {}
+    cols = st.columns(2)
+    for i, feat in enumerate(feature_names):
+        with cols[i % 2]:
+            values[feat] = st.number_input(feat, value=0.0, format="%.4f", key=f"fusion_{feat}")
+
+    if st.button("Run Fusion Diagnostic", type="primary"):
+        if thermal_file is None:
+            st.error("Upload a thermal image first -- fusion needs both inputs.")
+            return
+
+        with st.spinner("Running both models..."):
+            try:
+                rf_df = pd.DataFrame([values])
+                rf_result = run_rf_inference_from_df(
+                    rf_df, string_config, panels_in_series, parallel_strings, user_panel_specs
+                )
+                thermal_result = run_thermal_cnn_inference(thermal_file)
+                fused = fusion.fuse_predictions(rf_result, thermal_result, string_config)
+            except Exception as e:
+                st.error(f"Inference failed: {e}")
+                return
+
+        with st.expander("Individual model outputs"):
+            st.write("**RF (sensor):**")
+            st.json({k: v for k, v in rf_result.items() if not k.startswith("_debug")})
+            st.write("**Thermal (image):**")
+            st.json({k: v for k, v in thermal_result.items() if not k.startswith("_debug")})
+
+        fusion_show_report(fused)
+
+
 def main():
     st.set_page_config(page_title="Solar PV Diagnostic Assistant", page_icon="☀️", layout="centered")
     inject_theme()
     render_hero()
     render_location_sidebar()
 
-    tab1, tab2 = st.tabs(["📁  Upload File", "⌨️  Manual Entry"])
+    tab1, tab2, tab3 = st.tabs(["📁  Upload File", "⌨️  Manual Entry", "🔗  Fusion"])
     with tab1:
         upload_tab()
     with tab2:
         manual_entry_tab()
+    with tab3:
+        fusion_tab()
 
 if __name__ == "__main__":
     main()
